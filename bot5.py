@@ -24,15 +24,13 @@ def send_message(text):
 def get_us_universe():
     import pandas as pd
 
-    url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-    tables = pd.read_html(url)
+    url = "https://raw.githubusercontent.com/pydata/pandas-datareader/master/pandas_datareader/data/nasdaq_symbols.csv"
+    df = pd.read_csv(url)
 
-    for t in tables:
-        if "Ticker" in t.columns:
-            df = t
-            break
+    # tiene solo NASDAQ-100 approx (filtriamo per simboli liquidi)
+    symbols = df["NASDAQ Symbol"].dropna().tolist()
 
-    return [symbol.replace(".", "-") for symbol in df["Ticker"].tolist()]
+    return [s.replace(".", "-") for s in symbols if isinstance(s, str)]
 
 
 
