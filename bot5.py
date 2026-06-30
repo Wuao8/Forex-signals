@@ -1,258 +1,201 @@
 import os
+import json
+import time
 import requests
 import pandas as pd
-import yfinance as yf
 
-# ======================
-# TELEGRAM
-# ======================
+TOKEN = os.environ["TOKEN"]
+CHAT_ID = os.environ["CHAT_ID"]
 
-TOKEN = os.environ.get("TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
+STATE_FILE = "state.json"
+
+BASE_URL = "https://api.mexc.com"
+
+FAST = 12
+SLOW = 26
+SIGNAL = 9
 
 
-def send_message(text):
+# ---------------- TELEGRAM ---------------- #
+
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+
+    requests.post(
+        url,
+        data={
+            "chat_id": CHAT_ID,
+            "text": message,
+            "parse_mode": "HTML"
+        },
+        timeout=30
+    )
+
+
+# ---------------- STATE ---------------- #
+
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
+
+
+# ---------------- MEXC ---------------- #
+
+def get_symbols():
+
+    r = requests.get(
+        BASE_URL + "/api/v3/exchangeInfo",
+        timeout=30
+    )
+
+    data = r.json()
+
+    symbols = []
+
+    for s in data["symbols"]:
+
+        if s["status"] != "1":
+            continue
+
+        if s["quoteAsset"] != "USDT":
+            continue
+
+        symbols.append(s["symbol"])
+
+    return sorted(symbols)
+
+
+def get_klines(symbol):
+
+    url = BASE_URL + "/api/v3/klines"
+
+    params = {
+        "symbol": symbol,
+        "interval": "1d",
+        "limit": 120
+    }
+
+    r = requests.get(
+        url,
+        params=params,
+        timeout=30
+    )
+
+    return r.json()
+
+
+# ---------------- INDICATORI ---------------- #
+
+def ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
+
+
+def macd(close):
+
+    ema_fast = ema(close, FAST)
+    ema_slow = ema(close, SLOW)
+
+    macd_line = ema_fast - ema_slow
+
+    signal = ema(macd_line, SIGNAL)
+
+    hist = macd_line - signal
+
+    return macd_line, signal, hist
+
+
+# ---------------- ANALISI ---------------- #
+
+def analyze(symbol):
+
     try:
-        url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-        requests.post(
-            url,
-            data={
-                "chat_id": CHAT_ID,
-                "text": text
-            },
-            timeout=20
-        )
-    except:
-        pass
 
+        candles = get_klines(symbol)
 
-# ======================
-# FOREX UNIVERSE
-# ======================
-
-def get_forex_universe():
-
-    pairs = [
-
-        # Majors
-        "EURUSD=X",
-        "GBPUSD=X",
-        "AUDUSD=X",
-        "NZDUSD=X",
-        "USDJPY=X",
-        "USDCHF=X",
-        "USDCAD=X",
-
-        # Euro Crosses
-        "EURGBP=X",
-        "EURJPY=X",
-        "EURCHF=X",
-        "EURAUD=X",
-        "EURNZD=X",
-        "EURCAD=X",
-
-        # GBP Crosses
-        "GBPJPY=X",
-        "GBPCHF=X",
-        "GBPAUD=X",
-        "GBPNZD=X",
-        "GBPCAD=X",
-
-        # AUD Crosses
-        "AUDJPY=X",
-        "AUDNZD=X",
-        "AUDCHF=X",
-        "AUDCAD=X",
-
-        # NZD Crosses
-        "NZDJPY=X",
-        "NZDCHF=X",
-        "NZDCAD=X",
-
-        # CAD Crosses
-        "CADJPY=X",
-        "CADCHF=X",
-
-        # CHF Crosses
-        "CHFJPY=X",
-
-        # Additional liquid pairs
-        "SGDJPY=X",
-        "EURSGD=X",
-        "GBPSGD=X",
-        "AUDSGD=X",
-        "USDSEK=X",
-        "USDNOK=X",
-        "USDMXN=X",
-        "USDZAR=X",
-        "USDTRY=X",
-        "USDPLN=X",
-        "USDHUF=X",
-        "USDCZK=X"
-    ]
-
-    return pairs
-
-
-# ======================
-# DATA
-# ======================
-
-def get_data(symbol):
-
-    try:
-
-        df = yf.download(
-            symbol,
-            period="6mo",
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-            threads=False
+        closes = pd.Series(
+            [float(x[4]) for x in candles]
         )
 
-        if df is None or df.empty:
-            return None
+        macd_line, signal, hist = macd(closes)
 
-        df = df[["Close"]].copy()
+        prev = macd_line.iloc[-2]
+        curr = macd_line.iloc[-1]
 
-        df["Close"] = pd.to_numeric(
-            df["Close"],
-            errors="coerce"
-        )
+        if prev < 0 and curr > 0:
+            return "LONG", curr
 
-        df = df.dropna()
+        if prev > 0 and curr < 0:
+            return "SHORT", curr
 
-        if len(df) < 50:
-            return None
+        return None
 
-        return df
+    except Exception as e:
 
-    except:
+        print(symbol, e)
+
         return None
 
 
-# ======================
-# INDICATORS
-# ======================
+# ---------------- MAIN ---------------- #
 
-def ema20(df):
-    return df["Close"].ewm(span=20).mean()
+def main():
 
+    state = load_state()
 
-def macd(df):
+    symbols = get_symbols()
 
-    ema12 = df["Close"].ewm(span=12).mean()
-    ema26 = df["Close"].ewm(span=26).mean()
+    print("Totale coppie:", len(symbols))
 
-    macd_line = ema12 - ema26
-    signal_line = macd_line.ewm(span=9).mean()
-
-    return macd_line, signal_line
-
-
-# ======================
-# SIGNAL LOGIC
-# ======================
-
-def check_signal(df):
-
-    df["ema20"] = ema20(df)
-
-    macd_line, signal_line = macd(df)
-
-    df["macd"] = macd_line
-    df["signal"] = signal_line
-
-    prev = df.iloc[-2]
-    last = df.iloc[-1]
-
-    long_ema = (
-        prev["Close"] < prev["ema20"]
-        and last["Close"] > last["ema20"]
-    )
-
-    short_ema = (
-        prev["Close"] > prev["ema20"]
-        and last["Close"] < last["ema20"]
-    )
-
-    long_macd = (
-        last["macd"] > last["signal"]
-    )
-
-    short_macd = (
-        last["macd"] < last["signal"]
-    )
-
-    if long_ema and long_macd:
-        return "LONG"
-
-    if short_ema and short_macd:
-        return "SHORT"
-
-    return None
-
-
-# ======================
-# ENGINE
-# ======================
-
-def run_scan():
-
-    signals = []
-
-    symbols = get_forex_universe()
+    changed = False
 
     for symbol in symbols:
 
-        try:
+        result = analyze(symbol)
 
-            df = get_data(symbol)
-
-            if df is None:
-                continue
-
-            signal = check_signal(df)
-
-            if signal:
-
-                price = float(df.iloc[-1]["Close"])
-
-                clean_symbol = symbol.replace("=X", "")
-
-                signals.append(
-                    f"{signal} | {clean_symbol} @ {round(price, 5)}"
-                )
-
-        except:
+        if result is None:
             continue
 
-    return signals
+        side, value = result
 
+        last = state.get(symbol)
 
-# ======================
-# MAIN
-# ======================
+        if last == side:
+            continue
+
+        state[symbol] = side
+
+        changed = True
+
+        emoji = "🟢" if side == "LONG" else "🔴"
+
+        message = (
+            f"{emoji} <b>{side}</b>\n\n"
+            f"{symbol}\n"
+            f"Timeframe: 1D\n"
+            f"MACD Zero Cross\n\n"
+            f"MACD = {value:.6f}"
+        )
+
+        print(message)
+
+        send_telegram(message)
+
+        time.sleep(1)
+
+# ---------------- MAIN ENTRY ---------------- #
 
 if __name__ == "__main__":
 
-    print("FOREX BOT STARTING SCAN...")
+    print("Starting MACD Zero Cross Bot...")
 
-    results = run_scan()
-
-    if results:
-
-        msg = (
-            "💱 FOREX DAILY SIGNALS\n"
-            "EMA20 + MACD\n\n"
-            + "\n".join(results[:20])
-        )
-
-        send_message(msg)
-
-        print("Signals sent:")
-        print(results)
-
-    else:
-        print("No signals found")
+    try:
+        main()
+    except Exception as e:
+        print("Fatal error:", e)
