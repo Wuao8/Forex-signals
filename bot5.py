@@ -182,7 +182,7 @@ def main():
             "value": float(value)
         })
 
-save_signals(signals)
+        save_signals(signals)
 
         emoji = "🟢" if side == "LONG" else "🔴"
 
