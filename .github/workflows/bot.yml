@@ -1,8 +1,8 @@
-name: Stock Signal Bot
+name: MEXC MACD Bot
 
 on:
   schedule:
-    - cron: "0 */8 * * *"
+    - cron: "0 */8 * * *"   # ogni 8 ore
   workflow_dispatch:
 
 jobs:
